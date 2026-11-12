@@ -1,30 +1,96 @@
-name: Extract ZIP file
+name: PS-HR one-file validation
 
+# Save this as .github/workflows/pshr.yml in your GitHub repository, and put pshr-github-upload.zip in the repository root.
+# Keep pshr-github-upload.zip in the repository root. The 'prepare' job extracts it, then the workflow runs validation on GitHub's computers
+# (x86 and ARM speed, tests, synthetic experiments, real sentence model on Banking77 + CLINC150), then commits all
+# results into the repo under  ci-results/  and the project source under  pshr/  so they can be read from GitHub.
+# The run starts by itself when the file is committed, and can be restarted from the Actions tab (Run workflow).
 on:
   workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths: ['.github/workflows/pshr.yml']
 
 jobs:
-  extract-zip:
+  prepare:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out repository
+      - name: Check out repository (including the project ZIP)
         uses: actions/checkout@v4
 
-      - name: Extract ZIP archive
-        shell: bash
+      - name: Extract the project ZIP
         run: |
+          set -euo pipefail
           ZIP_FILE="pshr-github-upload.zip"
-          DESTINATION="extracted"
-
-          if [[ ! -f "$ZIP_FILE" ]]; then
-            echo "ERROR: ZIP file not found: $ZIP_FILE"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: $ZIP_FILE was not found in the repository root."
+            echo "Upload the ZIP to the repository root, then run this workflow again."
             exit 1
           fi
+          mkdir -p pshr
+          unzip -q "$ZIP_FILE" -d pshr
+          echo "Extracted project files:"
+          find pshr -maxdepth 3 -type f | sort | head -200
 
-          mkdir -p "$DESTINATION"
-          unzip -o "$ZIP_FILE" -d "$DESTINATION"
+      - name: Upload extracted project for the other jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: project
+          path: pshr
 
-          echo "ZIP extraction completed. Contents:"
-          find "$DESTINATION" -maxdepth 3 -type f -print
-          
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pshr
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: project, path: pshr }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: make test
+
+  bench:                       # speed of the C search code on x86 and on ARM
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: pshr
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: project, path: pshr }
+      - run: make build
+      - name: Run benchmarks
+        run: |
+          mkdir -p out
+          F=out/bench_${{ matrix.os }}.md
+          { echo "# $(uname -m)"; lscpu | grep -E 'Model name|Architecture|^CPU\(s\)|L2|L3' || true; echo; } | tee $F
+          for b in scalar simd; do
+            echo "## bench_$b, cold cache" | tee -a $F
+            ./build/bench_$b 100000 1 | tee -a $F
+            echo "## sweep_$b, near-tie stores, cold cache" | tee -a $F
+            for cfg in "20000 5 2 16" "20000 6 2 16"; do ./build/sweep_$b 100000 $cfg 1 | tee -a $F; done
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: "bench-${{ matrix.os }}", path: pshr/out }
+
+  synthetic:                   # everything that needs no downloads
+    needs: prepare
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pshr
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: project, path: pshr }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: make experiments experiments-knowledge experiments-compositional experiments-qa
+      - uses: actions/upload-artifact@v4
