@@ -1,0 +1,5 @@
+numpy>=2.0        # np.bitwise_count (popcount) requires NumPy 2.x
+scipy
+scikit-learn      # baselines only (logistic regression, hashing vectorizers)
+# optional, only for scripts/export_datasets.py:
+# datasets

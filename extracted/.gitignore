@@ -1,0 +1,7 @@
+__pycache__/
+build/
+data/
+work/
+*.npz
+corpus.txt
+pshr.zip
