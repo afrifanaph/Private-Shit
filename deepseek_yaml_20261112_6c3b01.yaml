@@ -1,0 +1,122 @@
+name: PS-HR real-data experiment
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'pshr-github-upload.zip'
+      - '.github/workflows/real-data.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  real-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Unpack PS-HR source
+        run: |
+          set -euo pipefail
+          if [ -f Makefile ]; then
+            echo "Using source already at repo root."
+            echo "PSHR_SRC=." >> "$GITHUB_ENV"
+            exit 0
+          fi
+          ZIP=$(find . -maxdepth 2 -name '*.zip' -not -path './.git/*' -print -quit)
+          test -n "$ZIP" || { echo "::error::No Makefile and no zip found"; exit 1; }
+          echo "Extracting $ZIP"
+          mkdir -p pshr
+          unzip -o "$ZIP" -d pshr/
+          # If the zip wrapped everything in a single folder, flatten it.
+          if [ ! -f pshr/Makefile ]; then
+            TOP=$(find pshr -mindepth 1 -maxdepth 1 -type d | head -n1)
+            if [ -n "$TOP" ] && [ -f "$TOP/Makefile" ]; then
+              shopt -s dotglob
+              mv "$TOP"/* pshr/
+              rmdir "$TOP"
+            fi
+          fi
+          test -f pshr/Makefile || { echo "::error::Makefile not found after extraction"; find pshr -maxdepth 3 | sort; exit 1; }
+          echo "PSHR_SRC=pshr" >> "$GITHUB_ENV"
+          echo "--- extracted tree ---"
+          find pshr -maxdepth 2 -not -path '*/__pycache__*' | sort | head -80
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+
+      - name: Install dependencies
+        working-directory: ${{ env.PSHR_SRC }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install datasets sentence-transformers
+
+      - name: Export Banking77 and CLINC150
+        working-directory: ${{ env.PSHR_SRC }}
+        run: |
+          mkdir -p data results
+          python scripts/export_datasets.py data/
+          echo "--- exported files ---"
+          ls -la data/ || true
+          for f in data/banking77_train.tsv data/banking77_test.tsv \
+                   data/clinc150_train.tsv data/clinc150_test.tsv; do
+            if [ -f "$f" ]; then
+              echo "=== $f ==="
+              wc -l "$f"
+              head -2 "$f"
+            fi
+          done
+
+      - name: Sanity tests
+        working-directory: ${{ env.PSHR_SRC }}
+        run: make test
+
+      - name: Real-data run — Banking77 (with MiniLM encoder)
+        working-directory: ${{ env.PSHR_SRC }}
+        run: |
+          make experiments-real \
+            DATA=data/banking77 \
+            EMBED=sentence-transformers/all-MiniLM-L6-v2
+
+      - name: Real-data run — CLINC150 (with MiniLM encoder)
+        if: success()
+        working-directory: ${{ env.PSHR_SRC }}
+        run: |
+          make experiments-real \
+            DATA=data/clinc150 \
+            EMBED=sentence-transformers/all-MiniLM-L6-v2
+        continue-on-error: true
+
+      - name: Show results
+        if: always()
+        working-directory: ${{ env.PSHR_SRC }}
+        run: |
+          echo "--- files under results/ ---"
+          find results -type f | sort || true
+          for f in results/real/*.md results/*.md; do
+            [ -f "$f" ] && { echo ""; echo "=========== $f ==========="; cat "$f"; }
+          done
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-data-results
+          path: |
+            ${{ env.PSHR_SRC }}/results/
+            ${{ env.PSHR_SRC }}/data/
+          retention-days: 30
+          if-no-files-found: warn
