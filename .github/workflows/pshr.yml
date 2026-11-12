@@ -1,106 +1,30 @@
-      run:
-        working-directory: pshr
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: project, path: pshr }
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: make test
+name: Extract ZIP file
 
-  bench:                       # speed of the C search code on x86 and on ARM
-    needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: pshr
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: project, path: pshr }
-      - run: make build
-      - name: Run benchmarks
-        run: |
-          mkdir -p out
-          F=out/bench_${{ matrix.os }}.md
-          { echo "# $(uname -m)"; lscpu | grep -E 'Model name|Architecture|^CPU\(s\)|L2|L3' || true; echo; } | tee $F
-          for b in scalar simd; do
-            echo "## bench_$b, cold cache" | tee -a $F
-            ./build/bench_$b 100000 1 | tee -a $F
-            echo "## sweep_$b, near-tie stores, cold cache" | tee -a $F
-            for cfg in "20000 5 2 16" "20000 6 2 16"; do ./build/sweep_$b 100000 $cfg 1 | tee -a $F; done
-          done
-      - uses: actions/upload-artifact@v4
-        with: { name: "bench-${{ matrix.os }}", path: pshr/out }
+on:
+  workflow_dispatch:
 
-  synthetic:                   # everything that needs no downloads
-    needs: prepare
+jobs:
+  extract-zip:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: pshr
-    steps:
-      - uses: actions/download-artifact@v4
-        with: { name: project, path: pshr }
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt
-      - run: make experiments experiments-knowledge experiments-compositional experiments-qa
-      - uses: actions/upload-artifact@v4
-        with: { name: results-synthetic, path: pshr/results }
 
-  real-model:                  # real sentence model on real datasets. NOT yet run by the author; may need fixes.
-    needs: prepare
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 120
-    defaults:
-      run:
-        working-directory: pshr
     steps:
-      - uses: actions/download-artifact@v4
-        with: { name: project, path: pshr }
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt sentence-transformers datasets
-      - name: Download Banking77 and CLINC150
-        run: python scripts/export_datasets.py data
-      - name: Banking77 with the real sentence model
-        run: |
-          mkdir -p results/ci
-          make experiments-real DATA=data/banking77 SEEDS=1 EMBED=sentence-transformers/all-MiniLM-L6-v2 OUT=results/ci/banking77 2>&1 | tee results/ci/banking77_minilm.log
-      - name: CLINC150 with the real sentence model
-        if: always()
-        run: |
-          make experiments-real DATA=data/clinc150 SEEDS=1 EMBED=sentence-transformers/all-MiniLM-L6-v2 OUT=results/ci/clinc150 2>&1 | tee results/ci/clinc150_minilm.log
-      - name: Paraphrase benchmark and QA with the real sentence model
-        if: always()
-        run: |
-          cd experiments && python run_embedding.py --model sentence-transformers/all-MiniLM-L6-v2 2>&1 | tee ../results/ci/paraphrase_qa_minilm.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with: { name: results-real-model, path: pshr/results }
+      - name: Check out repository
+        uses: actions/checkout@v4
 
-  publish:                     # put every result (and the project source) into the repo so it can be read from GitHub
-    needs: [prepare, test, bench, synthetic, real-model]
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: ci-results
-      - name: Commit results
+      - name: Extract ZIP archive
+        shell: bash
         run: |
-          [ -d pshr ] || cp -r ci-results/project pshr
-          rm -rf ci-results/project
-          git config user.name "github-actions"
-          git config user.email "actions@users.noreply.github.com"
-          git add ci-results pshr
-          git commit -m "PS-HR CI results from run ${{ github.run_id }}" || echo "nothing to commit"
-          git push
+          ZIP_FILE="archive.zip"
+          DESTINATION="extracted"
+
+          if [[ ! -f "$ZIP_FILE" ]]; then
+            echo "ERROR: ZIP file not found: $ZIP_FILE"
+            exit 1
+          fi
+
+          mkdir -p "$DESTINATION"
+          unzip -o "$ZIP_FILE" -d "$DESTINATION"
+
+          echo "ZIP extraction completed. Contents:"
+          find "$DESTINATION" -maxdepth 3 -type f -print
           
