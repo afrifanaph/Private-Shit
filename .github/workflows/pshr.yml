@@ -5,7 +5,6 @@
         with: { name: project, path: pshr }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt
       - run: make test
 
   bench:                       # speed of the C search code on x86 and on ARM
