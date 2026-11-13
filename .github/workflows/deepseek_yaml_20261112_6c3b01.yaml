@@ -37,7 +37,6 @@ jobs:
           echo "Extracting $ZIP"
           mkdir -p pshr
           unzip -o "$ZIP" -d pshr/
-          # If the zip wrapped everything in a single folder, flatten it.
           if [ ! -f pshr/Makefile ]; then
             TOP=$(find pshr -mindepth 1 -maxdepth 1 -type d | head -n1)
             if [ -n "$TOP" ] && [ -f "$TOP/Makefile" ]; then
@@ -68,7 +67,13 @@ jobs:
         working-directory: ${{ env.PSHR_SRC }}
         run: |
           mkdir -p data results
-          python scripts/export_datasets.py data/
+
+          # HuggingFace renamed clinc_oos -> clinc/clinc_oos. Patch the script.
+          sed -i 's|"clinc_oos"|"clinc/clinc_oos"|g' scripts/export_datasets.py || true
+
+          # Let the script attempt both; tolerate failure so we still have Banking77.
+          python scripts/export_datasets.py data/ || true
+
           echo "--- exported files ---"
           ls -la data/ || true
           for f in data/banking77_train.tsv data/banking77_test.tsv \
@@ -79,6 +84,12 @@ jobs:
               head -2 "$f"
             fi
           done
+
+          # Banking77 is required.
+          if [ ! -f data/banking77_train.tsv ] || [ ! -f data/banking77_test.tsv ]; then
+            echo "::error::Banking77 export missing"
+            exit 1
+          fi
 
       - name: Sanity tests
         working-directory: ${{ env.PSHR_SRC }}
